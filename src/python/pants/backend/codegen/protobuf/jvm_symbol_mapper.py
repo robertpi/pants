@@ -19,7 +19,7 @@ from pants.engine.target import HydrateSourcesRequest
 from pants.jvm.dependency_inference.artifact_mapper import MutableTrieNode
 from pants.jvm.dependency_inference.symbol_mapper import SymbolMap
 from pants.jvm.subsystems import JvmSubsystem
-from pants.jvm.target_types import JvmResolveField
+from pants.jvm.target_types import JvmCodegenTypeField, JvmResolveField
 from pants.util.ordered_set import OrderedSet
 
 _ResolveName = str
@@ -27,7 +27,13 @@ _ResolveName = str
 
 @dataclass(frozen=True)
 class FirstPartyProtobufJvmMappingRequest:
-    capitalize_base_name: bool
+    # Which JVM language this mapping is being computed for -- "java" or "scala". Used both to
+    # pick the generated symbol's expected capitalization (see `_determine_namespace`) and to
+    # exclude targets whose `JvmCodegenTypeField` value names the other language, so that (once a
+    # target is `parametrize`d by `jvm_codegen_type`) inferred dependencies point at the address
+    # generating sources for the consumer's own language, rather than at an address that has been
+    # configured to skip that language's codegen entirely.
+    language: str
 
 
 @rule
@@ -36,6 +42,13 @@ async def map_first_party_protobuf_jvm_targets_to_symbols(
     all_protobuf_targets: AllProtobufTargets,
     jvm: JvmSubsystem,
 ) -> SymbolMap:
+    relevant_targets = tuple(
+        tgt
+        for tgt in all_protobuf_targets
+        if (codegen_type := tgt.get(JvmCodegenTypeField).value) is None
+        or codegen_type == request.language
+    )
+
     sources = await concurrently(
         hydrate_sources(
             HydrateSourcesRequest(
@@ -45,7 +58,7 @@ async def map_first_party_protobuf_jvm_targets_to_symbols(
             ),
             **implicitly(),
         )
-        for tgt in all_protobuf_targets
+        for tgt in relevant_targets
     )
 
     all_contents = await concurrently(
@@ -55,7 +68,7 @@ async def map_first_party_protobuf_jvm_targets_to_symbols(
     namespace_mapping: DefaultDict[tuple[_ResolveName, str], OrderedSet[Address]] = defaultdict(
         OrderedSet
     )
-    for tgt, contents in zip(all_protobuf_targets, all_contents):
+    for tgt, contents in zip(relevant_targets, all_contents):
         if not contents:
             continue
         if len(contents) > 1:
@@ -65,7 +78,7 @@ async def map_first_party_protobuf_jvm_targets_to_symbols(
 
         resolve = tgt[JvmResolveField].normalized_value(jvm)
         namespace = _determine_namespace(
-            contents[0], capitalize_base_name=request.capitalize_base_name
+            contents[0], capitalize_base_name=request.language == "java"
         )
         namespace_mapping[(resolve, namespace)].add(tgt.address)
 

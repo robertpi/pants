@@ -22,6 +22,7 @@ from pants.core.util_rules.external_tool import download_external_tool
 from pants.core.util_rules.source_files import SourceFilesRequest
 from pants.core.util_rules.stripped_source_files import strip_source_roots
 from pants.engine.fs import (
+    EMPTY_SNAPSHOT,
     AddPrefix,
     CreateDigest,
     Digest,
@@ -45,7 +46,7 @@ from pants.engine.target import GeneratedSources, GenerateSourcesRequest, Transi
 from pants.engine.unions import UnionRule
 from pants.jvm.resolve.coursier_fetch import ToolClasspathRequest, materialize_classpath_for_tool
 from pants.jvm.resolve.jvm_tool import GenerateJvmLockfileFromTool
-from pants.jvm.target_types import PrefixedJvmJdkField, PrefixedJvmResolveField
+from pants.jvm.target_types import JvmCodegenTypeField, PrefixedJvmJdkField, PrefixedJvmResolveField
 from pants.source.source_root import SourceRootRequest, get_source_root
 from pants.util.logging import LogLevel
 
@@ -53,6 +54,8 @@ from pants.util.logging import LogLevel
 class GenerateJavaFromProtobufRequest(GenerateSourcesRequest):
     input = ProtobufSourceField
     output = JavaSourceField
+    codegen_variant_field = JvmCodegenTypeField
+    codegen_variant = "java"
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,10 @@ async def generate_java_from_protobuf(
     grpc_plugin: ProtobufJavaGrpcPlugin,  # TODO: Don't access grpc plugin unless gRPC codegen is enabled.
     platform: Platform,
 ) -> GeneratedSources:
+    codegen_type = request.protocol_target.get(JvmCodegenTypeField).value
+    if codegen_type is not None and codegen_type != "java":
+        return GeneratedSources(EMPTY_SNAPSHOT)
+
     download_protoc_request = download_external_tool(protoc.get_request(platform))
 
     output_dir = "_generated_files"
@@ -211,6 +218,8 @@ def rules():
         ProtobufSourcesGeneratorTarget.register_plugin_field(PrefixedJvmJdkField),
         ProtobufSourceTarget.register_plugin_field(PrefixedJvmResolveField),
         ProtobufSourcesGeneratorTarget.register_plugin_field(PrefixedJvmResolveField),
+        ProtobufSourceTarget.register_plugin_field(JvmCodegenTypeField),
+        ProtobufSourcesGeneratorTarget.register_plugin_field(JvmCodegenTypeField),
         # Bring in the Java backend (since this backend compiles Java code) to avoid rule graph errors.
         # TODO: Figure out whether a subset of rules can be brought in to still avoid rule graph errors.
         *java_backend_rules(),

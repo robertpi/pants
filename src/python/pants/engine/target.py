@@ -1581,6 +1581,17 @@ class GenerateSourcesRequest:
 
     exportable: ClassVar[bool] = True
 
+    # Optional discriminator used to disambiguate multiple `GenerateSourcesRequest` implementations
+    # that share the same `input` field but produce different `output` fields -- for example, both
+    # the Java and Scala protobuf codegen backends consume `ProtobufSourceField`. If
+    # `codegen_variant_field` is registered on the `protocol_target` and has a concrete value that
+    # doesn't match `codegen_variant`, this implementation is treated as inapplicable to that
+    # target. Combine with `parametrize` on `codegen_variant_field` to let a single input serve
+    # multiple output languages, each via its own parametrized address. Consulted by
+    # `pants.jvm.compile.ClasspathEntryRequestFactory`; has no effect elsewhere.
+    codegen_variant_field: ClassVar[type[StringField] | None] = None
+    codegen_variant: ClassVar[str | None] = None
+
 
 @dataclass(frozen=True)
 class GeneratedSources:

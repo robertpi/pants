@@ -17,6 +17,7 @@ from pants.backend.codegen.protobuf.java.rules import rules as java_protobuf_rul
 from pants.backend.codegen.protobuf.target_types import (
     ProtobufSourceField,
     ProtobufSourcesGeneratorTarget,
+    ProtobufSourceTarget,
 )
 from pants.backend.codegen.protobuf.target_types import rules as target_types_rules
 from pants.backend.experimental.java.register import rules as java_backend_rules
@@ -98,6 +99,7 @@ def rule_runner() -> RuleRunner:
             QueryRule(Addresses, (DependenciesRequest,)),
         ],
         target_types=[
+            ProtobufSourceTarget,
             ProtobufSourcesGeneratorTarget,
             JavaSourceTarget,
             JavaSourcesGeneratorTarget,
@@ -559,4 +561,63 @@ def test_protobuf_imports_no_cross_resolve(
         source_roots=source_roots,
         expected_files=["protos/CommonOuterClass.java"],
         extra_args=extra_args,
+    )
+
+
+# `jvm_codegen_type` field
+
+
+def test_jvm_codegen_type_skips_non_java(rule_runner: RuleRunner) -> None:
+    """When `jvm_codegen_type` names a different language, Java codegen produces nothing.
+
+    This is what lets a single `protobuf_sources` declaration be `parametrize`d by
+    `jvm_codegen_type` and consumed by both `java_sources` and `scala_sources` without the
+    `ClasspathSourceAmbiguity` error that motivated this field: each parametrized address is only
+    "real" for its own language's codegen backend.
+    """
+    rule_runner.write_files(
+        {
+            "protos/f.proto": dedent(
+                """\
+                syntax = "proto3";
+                message A {
+                  string name = 1;
+                }
+                """
+            ),
+            "protos/BUILD": "protobuf_source(name='proto', source='f.proto', jvm_codegen_type='scala')",
+        }
+    )
+    assert_files_generated(
+        rule_runner,
+        Address("protos", target_name="proto"),
+        source_roots=["/"],
+        expected_files=[],
+    )
+
+
+@maybe_skip_jdk_test
+def test_jvm_codegen_type_allows_matching_language(
+    rule_runner: RuleRunner, protobuf_java_lockfile: JVMLockfileFixture
+) -> None:
+    rule_runner.write_files(
+        {
+            "protos/f.proto": dedent(
+                """\
+                syntax = "proto3";
+                message A {
+                  string name = 1;
+                }
+                """
+            ),
+            "protos/BUILD": "protobuf_source(name='proto', source='f.proto', jvm_codegen_type='java')",
+            "3rdparty/jvm/default.lock": protobuf_java_lockfile.serialized_lockfile,
+            "3rdparty/jvm/BUILD": protobuf_java_lockfile.requirements_as_jvm_artifact_targets(),
+        }
+    )
+    assert_files_generated(
+        rule_runner,
+        Address("protos", target_name="proto"),
+        source_roots=["/"],
+        expected_files=["F.java"],
     )

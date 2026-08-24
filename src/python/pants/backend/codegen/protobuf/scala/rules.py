@@ -29,6 +29,7 @@ from pants.core.util_rules.source_files import SourceFilesRequest
 from pants.core.util_rules.stripped_source_files import strip_source_roots
 from pants.engine.env_vars import EnvironmentVarsRequest
 from pants.engine.fs import (
+    EMPTY_SNAPSHOT,
     AddPrefix,
     CreateDigest,
     Digest,
@@ -66,7 +67,7 @@ from pants.jvm.resolve.jvm_tool import (
     GenerateJvmLockfileFromTool,
     gather_coordinates_for_jvm_lockfile,
 )
-from pants.jvm.target_types import PrefixedJvmJdkField, PrefixedJvmResolveField
+from pants.jvm.target_types import JvmCodegenTypeField, PrefixedJvmJdkField, PrefixedJvmResolveField
 from pants.source.source_root import SourceRootRequest, get_source_root
 from pants.util.logging import LogLevel
 from pants.util.ordered_set import FrozenOrderedSet
@@ -76,6 +77,8 @@ from pants.util.resources import read_resource
 class GenerateScalaFromProtobufRequest(GenerateSourcesRequest):
     input = ProtobufSourceField
     output = ScalaSourceField
+    codegen_variant_field = JvmCodegenTypeField
+    codegen_variant = "scala"
 
 
 class ScalaPBShimCompiledClassfiles(ClasspathEntry):
@@ -148,6 +151,10 @@ async def generate_scala_from_protobuf(
     jdk: InternalJdk,
     platform: Platform,
 ) -> GeneratedSources:
+    codegen_type = request.protocol_target.get(JvmCodegenTypeField).value
+    if codegen_type is not None and codegen_type != "scala":
+        return GeneratedSources(EMPTY_SNAPSHOT)
+
     output_dir = "_generated_files"
     toolcp_relpath = "__toolcp"
     shimcp_relpath = "__shimcp"
@@ -348,6 +355,8 @@ def rules():
         ProtobufSourcesGeneratorTarget.register_plugin_field(PrefixedJvmJdkField),
         ProtobufSourceTarget.register_plugin_field(PrefixedJvmResolveField),
         ProtobufSourcesGeneratorTarget.register_plugin_field(PrefixedJvmResolveField),
+        ProtobufSourceTarget.register_plugin_field(JvmCodegenTypeField),
+        ProtobufSourcesGeneratorTarget.register_plugin_field(JvmCodegenTypeField),
         # Rules to avoid rule graph errors.
         *artifact_mapper.rules(),
         *distdir.rules(),

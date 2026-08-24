@@ -42,7 +42,7 @@ from pants.backend.java.target_types import rules as java_target_types_rules
 from pants.backend.scala.compile.scalac import CompileScalaSourceRequest
 from pants.backend.scala.compile.scalac import rules as scalac_rules
 from pants.backend.scala.dependency_inference.rules import rules as scala_dep_inf_rules
-from pants.backend.scala.target_types import ScalaSourcesGeneratorTarget
+from pants.backend.scala.target_types import ScalaSourceField, ScalaSourcesGeneratorTarget
 from pants.backend.scala.target_types import rules as scala_target_types_rules
 from pants.build_graph.address import Address
 from pants.core.target_types import FilesGeneratorTarget, RelocatedFiles
@@ -53,9 +53,9 @@ from pants.engine.fs import EMPTY_DIGEST
 from pants.engine.target import (
     CoarsenedTarget,
     GeneratedSources,
+    GenerateSourcesRequest,
     HydratedSources,
     HydrateSourcesRequest,
-    SourcesField,
     Target,
     UnexpandedTargets,
 )
@@ -73,7 +73,7 @@ from pants.jvm.resolve.coursier_fetch import rules as coursier_fetch_rules
 from pants.jvm.resolve.coursier_setup import rules as coursier_setup_rules
 from pants.jvm.resolve.key import CoursierResolveKey
 from pants.jvm.strip_jar import strip_jar
-from pants.jvm.target_types import JvmArtifactTarget
+from pants.jvm.target_types import JvmArtifactTarget, JvmCodegenTypeField
 from pants.jvm.testutil import (
     RenderedClasspath,
     expect_single_expanded_coarsened_target,
@@ -213,6 +213,20 @@ class CompileMockSourceRequest(ClasspathEntryRequest):
     field_sets = (JavaFieldSet, JavaGeneratorFieldSet)
 
 
+class GenerateFakeScalaFromProtobufRequest(GenerateSourcesRequest):
+    """Stands in for the real Scala protobuf codegen backend's `GenerateSourcesRequest`.
+
+    Used to exercise `codegen_variant_field`/`codegen_variant`-based disambiguation without
+    pulling in the full ScalaPB toolchain, mirroring how the real Java and Scala protobuf codegen
+    backends both consume `ProtobufSourceField` but are disambiguated via `JvmCodegenTypeField`.
+    """
+
+    input = ProtobufSourceField
+    output = ScalaSourceField
+    codegen_variant_field = JvmCodegenTypeField
+    codegen_variant = "scala"
+
+
 @maybe_skip_jdk_test
 def test_request_classification(
     rule_runner: RuleRunner, scala_stdlib_jvm_lockfile: JVMLockfileFixture
@@ -220,7 +234,9 @@ def test_request_classification(
     def classify(
         targets: Sequence[Target],
         members: Sequence[type[ClasspathEntryRequest]],
-        generators: FrozenDict[type[ClasspathEntryRequest], frozenset[type[SourcesField]]],
+        generators: FrozenDict[
+            type[ClasspathEntryRequest], tuple[type[GenerateSourcesRequest], ...]
+        ],
     ) -> tuple[type[ClasspathEntryRequest], type[ClasspathEntryRequest] | None]:
         factory = ClasspathEntryRequestFactory(tuple(members), generators)
 
@@ -239,6 +255,8 @@ def test_request_classification(
                 jvm_artifact(name='jvm_artifact', group='ex', artifact='ex', version='0.0.0')
                 protobuf_source(name='proto', source="f.proto")
                 protobuf_sources(name='protos')
+                protobuf_source(name='proto_java', source="f.proto", jvm_codegen_type="java")
+                protobuf_source(name='proto_scala', source="f.proto", jvm_codegen_type="scala")
                 """
             ),
             "f.proto": proto_source(),
@@ -246,7 +264,15 @@ def test_request_classification(
             "3rdparty/jvm/default.lock": scala_stdlib_jvm_lockfile.serialized_lockfile,
         }
     )
-    scala, java, jvm_artifact, proto, protos = rule_runner.request(
+    (
+        scala,
+        java,
+        jvm_artifact,
+        proto,
+        protos,
+        proto_java,
+        proto_scala,
+    ) = rule_runner.request(
         UnexpandedTargets,
         [
             Addresses(
@@ -256,15 +282,19 @@ def test_request_classification(
                     Address("", target_name="jvm_artifact"),
                     Address("", target_name="proto"),
                     Address("", target_name="protos"),
+                    Address("", target_name="proto_java"),
+                    Address("", target_name="proto_scala"),
                 ]
             )
         ],
     )
     all_members = [CompileJavaSourceRequest, CompileScalaSourceRequest, CoursierFetchRequest]
-    generators = FrozenDict(
+    generators: FrozenDict[
+        type[ClasspathEntryRequest], tuple[type[GenerateSourcesRequest], ...]
+    ] = FrozenDict(
         {
-            CompileJavaSourceRequest: frozenset([cast(type[SourcesField], ProtobufSourceField)]),
-            CompileScalaSourceRequest: frozenset(),
+            CompileJavaSourceRequest: (GenerateJavaFromProtobufRequest,),
+            CompileScalaSourceRequest: (),
         }
     )
 
@@ -291,6 +321,29 @@ def test_request_classification(
     # Too many compatible.
     with pytest.raises(ClasspathSourceAmbiguity):
         classify([java], [CompileJavaSourceRequest, CompileMockSourceRequest], generators)
+
+    # When two `GenerateSourcesRequest`s (Java and Scala protobuf codegen, here stood in for by
+    # `GenerateFakeScalaFromProtobufRequest`) share the same `input` but declare different
+    # `codegen_variant`s, a target with no concrete `jvm_codegen_type` value remains ambiguous...
+    generators_with_variants: FrozenDict[
+        type[ClasspathEntryRequest], tuple[type[GenerateSourcesRequest], ...]
+    ] = FrozenDict(
+        {
+            CompileJavaSourceRequest: (GenerateJavaFromProtobufRequest,),
+            CompileScalaSourceRequest: (GenerateFakeScalaFromProtobufRequest,),
+        }
+    )
+    with pytest.raises(ClasspathSourceAmbiguity):
+        classify([proto], all_members, generators_with_variants)
+
+    # ...but setting `jvm_codegen_type` (directly, or via one address of a `parametrize`d field)
+    # disambiguates which codegen implementation applies.
+    assert (CompileJavaSourceRequest, None) == classify(
+        [proto_java], all_members, generators_with_variants
+    )
+    assert (CompileScalaSourceRequest, None) == classify(
+        [proto_scala], all_members, generators_with_variants
+    )
 
 
 @maybe_skip_jdk_test

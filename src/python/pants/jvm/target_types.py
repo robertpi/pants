@@ -113,6 +113,36 @@ class PrefixedJvmResolveField(JvmResolveField):
     alias = "jvm_resolve"
 
 
+class JvmCodegenTypeField(StringField):
+    alias = "jvm_codegen_type"
+    valid_choices = ("java", "scala")
+    default = None
+    help = help_text(
+        """
+        Restrict which JVM language this codegen source should be compiled for, when it can be
+        consumed by more than one JVM codegen backend that would otherwise be ambiguous (for
+        example, both the Java and Scala protobuf codegen backends can consume the same
+        `protobuf_sources` target).
+
+        This is only necessary when a single codegen input (e.g. one `protobuf_sources` target)
+        is depended on by both `java_sources` and `scala_sources` targets: without it, Pants
+        can't tell which language's compiler should be handed the generated code, and compiling
+        either target will fail with an ambiguous classpath provider error.
+
+        Use `parametrize` to generate both languages from one declaration, and have each
+        consumer depend on the address for its own language:
+
+            protobuf_sources(
+                name="protos",
+                jvm_codegen_type=parametrize("java", "scala"),
+            )
+
+            java_sources(name="java_lib", dependencies=[":protos@jvm_codegen_type=java"])
+            scala_sources(name="scala_lib", dependencies=[":protos@jvm_codegen_type=scala"])
+        """
+    )
+
+
 # -----------------------------------------------------------------------------------------------
 # Targets that can be called with `./pants run` or `experimental_run_in_sandbox`
 # -----------------------------------------------------------------------------------------------

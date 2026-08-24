@@ -16,6 +16,7 @@ from pants.backend.codegen.protobuf.scala.rules import rules as scala_protobuf_r
 from pants.backend.codegen.protobuf.target_types import (
     ProtobufSourceField,
     ProtobufSourcesGeneratorTarget,
+    ProtobufSourceTarget,
 )
 from pants.backend.codegen.protobuf.target_types import rules as protobuf_target_types_rules
 from pants.backend.scala import target_types
@@ -124,6 +125,7 @@ def rule_runner() -> RuleRunner:
         target_types=[
             ScalaSourceTarget,
             ScalaSourcesGeneratorTarget,
+            ProtobufSourceTarget,
             ProtobufSourcesGeneratorTarget,
             JvmArtifactTarget,
         ],
@@ -416,3 +418,65 @@ def test_generates_grpc_scala(
         RenderedClasspath,
         [CompileScalaSourceRequest(component=coarsened_target, resolve=make_resolve(rule_runner))],
     )
+
+
+# `jvm_codegen_type` field
+
+
+def _generated_files(rule_runner: RuleRunner, address: Address) -> frozenset[str]:
+    rule_runner.set_options(["--source-root-patterns=['/']"], env_inherit=PYTHON_BOOTSTRAP_ENV)
+    tgt = rule_runner.get_target(address)
+    protocol_sources = rule_runner.request(
+        HydratedSources, [HydrateSourcesRequest(tgt[ProtobufSourceField])]
+    )
+    generated_sources = rule_runner.request(
+        GeneratedSources,
+        [GenerateScalaFromProtobufRequest(protocol_sources.snapshot, tgt)],
+    )
+    return frozenset(generated_sources.snapshot.files)
+
+
+def test_jvm_codegen_type_skips_non_scala(rule_runner: RuleRunner) -> None:
+    """When `jvm_codegen_type` names a different language, Scala codegen produces nothing.
+
+    This is what lets a single `protobuf_sources` declaration be `parametrize`d by
+    `jvm_codegen_type` and consumed by both `java_sources` and `scala_sources` without the
+    `ClasspathSourceAmbiguity` error that motivated this field: each parametrized address is only
+    "real" for its own language's codegen backend.
+    """
+    rule_runner.write_files(
+        {
+            "protos/f.proto": dedent(
+                """\
+                syntax = "proto3";
+                message A {
+                  string name = 1;
+                }
+                """
+            ),
+            "protos/BUILD": "protobuf_source(name='proto', source='f.proto', jvm_codegen_type='java')",
+        }
+    )
+    assert _generated_files(rule_runner, Address("protos", target_name="proto")) == frozenset()
+
+
+@maybe_skip_jdk_test
+def test_jvm_codegen_type_allows_matching_language(
+    rule_runner: RuleRunner, scalapb_lockfile: JVMLockfileFixture
+) -> None:
+    rule_runner.write_files(
+        {
+            "protos/f.proto": dedent(
+                """\
+                syntax = "proto3";
+                message A {
+                  string name = 1;
+                }
+                """
+            ),
+            "protos/BUILD": "protobuf_source(name='proto', source='f.proto', jvm_codegen_type='scala')",
+            "3rdparty/jvm/default.lock": scalapb_lockfile.serialized_lockfile,
+            "3rdparty/jvm/BUILD": scalapb_lockfile.requirements_as_jvm_artifact_targets(),
+        }
+    )
+    assert _generated_files(rule_runner, Address("protos", target_name="proto"))

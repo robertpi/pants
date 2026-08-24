@@ -22,7 +22,7 @@ async def map_first_party_protobuf_scala_targets_to_symbols(
     _: FirstPartyProtobufJavaTargetsMappingRequest,
 ) -> SymbolMap:
     return await map_first_party_protobuf_jvm_targets_to_symbols(
-        FirstPartyProtobufJvmMappingRequest(capitalize_base_name=True), **implicitly()
+        FirstPartyProtobufJvmMappingRequest(language="java"), **implicitly()
     )
 
 
